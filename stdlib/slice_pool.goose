@@ -75,6 +75,36 @@ fn realloc_slice<T>(p: slice_pool<T>&, s: T[:], n: i64) -> T[:] {
     return slice_pool_detail::finish(p, to, count, idx, s);
 }
 
+// PROTOTYPE (not upstream): freeing that also gives memory back, for u8 pools.
+// After the ordinary free, the complete pages inside the freed elements are
+// returned to the OS. They read back as zeros, a valid u8, so stale views stay
+// safe; the next allocation that reuses them faults them back in. Pages only
+// partly inside the freed range are kept, since live neighbours may share them.
+extern fn slice_pool_detail::discard_pages(s: const u8[:]) -> bool = "gs_discard_pages";
+
+fn free_slice_discard(p: slice_pool<u8>&, s: u8[:]) {
+    free_slice(p, s);
+    if s.len != 0 { slice_pool_detail::discard_pages(s); }
+}
+
+// realloc_slice, then return the pages of the old run that the result does
+// not cover: the tail a shrink drops, or the old place of a run that moved.
+fn realloc_slice_discard(p: slice_pool<u8>&, s: u8[:], n: i64) -> u8[:] {
+    let old_at = if s.len == 0 { 0 } else { p.items.range_index(s) };
+    let old_len = s.len;
+    let r = realloc_slice(p, s, n);
+    if old_len != 0 {
+        let new_at = if r.len == 0 { old_at } else { p.items.range_index(r) };
+        let new_end = new_at + r.len;
+        let old_end = old_at + old_len;
+        let cut = if new_at < old_end { new_at } else { old_end };       // old part before the result
+        if old_at < cut { slice_pool_detail::discard_pages(p.items[old_at..cut]); }
+        let from = if new_end > old_at { new_end } else { old_at };      // old part after the result
+        if from < old_end { slice_pool_detail::discard_pages(p.items[from..old_end]); }
+    }
+    return r;
+}
+
 // Retain values and backing storage; every element belongs to one free run.
 fn recycle_all<T>(p: slice_pool<T>&) {
     if p.nodes.len == 0 && p.items.len == 0 { return; }

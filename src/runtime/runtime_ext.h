@@ -242,6 +242,8 @@ GS_API uint64_t gs_os_random_u64(void);
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);
+/* PROTOTYPE: slice_pool's discarding free (runtime_os.h). */
+GS_API uint8_t gs_discard_pages(sl_u8 s);
 /* std's slice_pool (stdlib/slice_pool_internal.goose) keeps its freelist in
    a checked copy of the runtime's span tree (runtime_os.h): `nodes` is a
    node[>..] of GS_SPAN_NODE-byte nodes, and `tree` its header, a field

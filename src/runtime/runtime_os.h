@@ -1191,6 +1191,42 @@ static void gs_spc_release(gs_spcpath *p, gs_spcnear *s, int64_t idx, int64_t cn
     }
 }
 
+/* PROTOTYPE (not upstream): slice_pool's discarding free for u8 pools.
+   Returns to the OS the complete pages lying inside `s`, which the caller
+   guarantees are free elements of a data-stack array, below its top. Pages
+   only partly inside `s` are kept: they may hold live neighbours.
+
+   A discarded page reads back as zeros, which is a valid u8 (and the value
+   alloc_slice writes anyway), so a stale view stays type-safe. Linux and
+   macOS supply a zero page on the next touch. Windows decommits, and the
+   access-fault handler commits again on the next touch, as it does for
+   growth: it accepts any address within a region's usable part. The commit
+   mark stays where it is, since pages above the discarded range remain
+   committed. Defined here rather than beside gs_trim_memory because it
+   takes the slice type that runtime_ext.h declares.
+
+   macOS returns nothing for now: MADV_DONTNEED reclaims nothing reliably
+   there (see gs_trim_memory), and no replacement has been tried on a Mac.
+   The pages simply stay, as with free_slice, and the result is 0. */
+GS_API uint8_t gs_discard_pages(sl_u8 s) {
+#if defined(__APPLE__)
+    (void)s;
+    return 0;
+#else
+    uintptr_t page = (uintptr_t)gs_page_size;
+    if (s.len <= 0 || page == 0) return 1;
+    uintptr_t start = ((uintptr_t)s.data + page - 1) / page * page;
+    uintptr_t end = ((uintptr_t)s.data + (uintptr_t)s.len) / page * page;
+    if (start >= end) return 1;
+    size_t len = (size_t)(end - start);
+#ifdef _WIN32
+    return (uint8_t)(VirtualFree((void *)start, len, MEM_DECOMMIT) != 0);
+#else
+    return (uint8_t)(madvise((void *)start, len, MADV_DONTNEED) == 0);
+#endif
+#endif
+}
+
 GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t cnt,
                                const gs_loc *at) {
     gs_spcpath p, q;
