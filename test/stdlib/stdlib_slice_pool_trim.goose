@@ -51,8 +51,45 @@ fn many_spans() {
     for f in freed { assert(f[f.len / 2] == 0); }
 }
 
+// A free span that reaches the end of items is cut off: items.len comes down
+// to where the span started, and the array grows again from there.
+fn tail() {
+    var p = slice_pool<u8> {};
+    let a = p.alloc_slice(10007);
+    let b = p.alloc_slice(300001);
+    let c = p.alloc_slice(20011);
+    let d = p.alloc_slice(300003);
+    fill(a, 1); fill(b, 2); fill(c, 3); fill(d, 4);
+    p.free_slice(b);
+    assert(p.trim());
+    assert(p.items.len == 630022);               // a hole below a live run: kept
+    p.free_slice(d);
+    assert(p.trim() && p.trim());
+    assert(p.items.len == 330019);               // the last span is gone
+    assert(all(a, 1) && all(c, 3));
+    let e = p.alloc_slice(300001);               // the hole is still a span
+    assert(p.items.range_index(e) == 10007 && all(e, 0));
+    // Growth from the new end: zeros, also in the part page trim kept.
+    let f = p.alloc_slice(5000);
+    assert(p.items.range_index(f) == 330019 && p.items.len == 335019 && all(f, 0));
+    fill(e, 5); fill(f, 6);
+    assert(all(a, 1) && all(e, 5) && all(c, 3) && all(f, 6));
+    // Spans that merge into one reaching the end go together.
+    p.free_slice(f);
+    p.free_slice(e);
+    p.free_slice(c);
+    assert(p.trim());
+    assert(p.items.len == 10007 && all(a, 1));
+    p.free_slice(a);
+    assert(p.trim());
+    assert(p.items.len == 0);
+    let g = p.alloc_slice(70000);                // an emptied pool starts over
+    assert(p.items.range_index(g) == 0 && p.items.len == 70000 && all(g, 0));
+}
+
 fn main() {
     neighbours();
     many_spans();
+    tail();
     print("slice pool trim: ok");
 }

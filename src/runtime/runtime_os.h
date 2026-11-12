@@ -1272,15 +1272,22 @@ GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int6
    nodes already seen is corrupt, as is a span outside the array; both abort
    before anything is discarded past them. Pages are discarded below the
    array's stack top only, so gs_trim_memory's commit mark is not moved.
-   0 means an OS request failed. */
-GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+
+   A span that reaches the array's end then leaves the tree, and the array
+   ends where the span began: its count and its stack's top come down
+   together, which generated code sees as it does a builder's growth (it
+   reloads a cached top after the call). A later gs_trim_memory lowers the
+   commit mark to the new top. Views of the cut elements stay addressable,
+   in the array's own reservation, and the array grows over them again with
+   default values. 0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, gs_rref items, int64_t elem,
                                   const gs_loc *at) {
     gs_spcpath p;
     uintptr_t page = (uintptr_t)gs_page_size;
-    int64_t count, visits = 0, l = 0;
+    uint8_t *data = items.hdr->base;
+    int64_t count = items.hdr->len, visits = 0, l = 0;
     int ok = 1;
-    if (nodes.hdr->len == 0 || items.len <= 0 || elem <= 0 || page == 0) return 1;
-    count = items.len / elem;
+    if (nodes.hdr->len == 0 || count <= 0 || elem <= 0 || page == 0) return 1;
     GS_SPSTART(&p, tree, nodes, at);
     p.h = GS_SPCHEAD(&p)->height;
     if (GS_SPBADH(p.h)) gs_spc_corrupt(&p);
@@ -1294,8 +1301,8 @@ GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_
             for (int64_t k = 0; k < lf->n; k++) {
                 int64_t idx = lf->idx[k], cnt = lf->cnt[k];
                 if (idx < 0 || cnt <= 0 || idx > count || cnt > count - idx) gs_spc_corrupt(&p);
-                uintptr_t lo = (uintptr_t)items.data + (uintptr_t)(idx * elem);
-                uintptr_t hi = (uintptr_t)items.data + (uintptr_t)((idx + cnt) * elem);
+                uintptr_t lo = (uintptr_t)data + (uintptr_t)(idx * elem);
+                uintptr_t hi = (uintptr_t)data + (uintptr_t)((idx + cnt) * elem);
                 uintptr_t start = (lo + page - 1) / page * page;
                 uintptr_t end = hi / page * page;
                 if (start < end && !gs_discard_pages(start, (size_t)(end - start))) ok = 0;
@@ -1314,6 +1321,23 @@ GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_
         l++;
         p.node[l] = c;
         p.pos[l] = 0;
+    }
+    /* The last span, by the rightmost path, which the walk has checked. An
+       array whose top is not its end is not cut. */
+    for (l = 0; l < p.h; l++) {
+        gs_spinner *in = GS_SPINNER(&p, p.node[l]);
+        if (in->n <= 0) gs_spc_corrupt(&p);
+        p.pos[l] = in->n - 1;
+        p.node[l + 1] = in->child[in->n - 1];
+    }
+    gs_spleaf *last = GS_SPLEAF(&p, p.node[p.h]);
+    int64_t k = last->n - 1;
+    if (k >= 0 && last->idx[k] + last->cnt[k] == count &&
+        items.stk->top == data + count * elem) {
+        int64_t idx = last->idx[k];
+        gs_spc_delete(&p, k);
+        items.hdr->len = idx;
+        items.stk->top = data + idx * elem;
     }
     return (uint8_t)ok;
 }
